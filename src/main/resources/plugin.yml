@@ -1,0 +1,29 @@
+name: VideoPlayerPlugin
+version: ${version}
+main: com.nightmare.videoplayermod.paper.VideoPlayerPlugin
+api-version: '1.21'
+authors: [nightmare]
+description: Paper bridge for VideoPlayerMod client playback
+
+commands:
+  cinematic:
+    description: Play/stop/list videos and set volume
+    usage: /cinematic <play|stop|list|volume>
+    permission: videoplayermod.command
+
+permissions:
+  videoplayermod.command:
+    description: Base permission for /cinematic
+    default: op
+  videoplayermod.play:
+    description: Allows /cinematic play
+    default: op
+  videoplayermod.stop:
+    description: Allows /cinematic stop
+    default: op
+  videoplayermod.list:
+    description: Allows /cinematic list
+    default: op
+  videoplayermod.volume:
+    description: Allows /cinematic volume
+    default: op
