@@ -39,3 +39,15 @@ runServer {
 tasks.named('runServer') {
     dependsOn(tasks.named('jar'))
 }
+
+def combinedBuildsDir = layout.projectDirectory.dir('BuildsCombined')
+
+tasks.register('copyPluginJarToCombined', Copy) {
+    dependsOn(tasks.named('jar'))
+    from(tasks.named('jar').flatMap { it.archiveFile })
+    into(combinedBuildsDir)
+}
+
+tasks.named('build') {
+    finalizedBy(tasks.named('copyPluginJarToCombined'))
+}

@@ -10,115 +10,158 @@ import net.minecraft.resources.ResourceLocation;
 import org.lwjgl.system.MemoryUtil;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.nio.IntBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.time.Duration;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
+/**
+ * Architecture: Pre-decode to file + Queue + Render-Paced
+ *
+ * Phase 1 (pre-decode): ffmpeg decodes ALL video frames to a temp .raw file on disk.
+ *         This runs at ffmpeg's full decode speed (500+ fps), limited only by disk write speed.
+ * Phase 2 (stream): A reader thread reads frames from the file into a queue.
+ *         File reads on SSD are ~50x faster than Windows pipe reads (~0.1ms vs ~5ms per frame).
+ * Render:  MC's render thread (~60fps) picks frames from the queue based on elapsed time.
+ *
+ * Early start: playback begins once 2 seconds of frames are pre-decoded,
+ *              while ffmpeg continues decoding the rest in the background.
+ * Audio sync:  audio starts exactly when pre-buffer fills and first frame is shown.
+ */
 public final class VideoPlaybackManager {
 
     private static final VideoPlaybackManager INSTANCE = new VideoPlaybackManager();
     private static final double DEFAULT_FPS = 30.0;
-    private static final int MAX_OUTPUT_WIDTH = 854;   // cap output to 480p (854x480) for pipe throughput
+    private static final int MAX_OUTPUT_WIDTH = 854;
     private static final int MAX_OUTPUT_HEIGHT = 480;
 
-    /** Monotonically increasing generation counter so old decode threads can detect they are stale. */
-    private final AtomicLong generation = new AtomicLong(0);
+    /** How many frames the queue can hold. Larger = more buffer against read hiccups. */
+    private static final int QUEUE_CAPACITY = 60;
+    /** Frames needed in queue before playback starts. */
+    private static final int PRE_BUFFER_FRAMES = 10;
 
+    private final AtomicLong generation = new AtomicLong(0);
     private final AtomicBoolean running = new AtomicBoolean(false);
 
-    private volatile Thread decodeThread;
-    private volatile Process videoProcess;
+    private volatile Thread workerThread;
+    private volatile Process ffmpegProcess;
     private volatile String currentVideoId = "";
     private volatile String statusText = "";
     private volatile float volume = 1.0f;
 
-    /*
-     * Double-buffered frame hand-off from decode thread to render thread.
-     * The decode thread writes into whichever FrameBuffer is NOT currently
-     * being consumed by the render thread, then atomically swaps.
-     */
+    /* ---------- frame queue ---------- */
     private static final class FrameBuffer {
-        int[] pixels;  // ABGR, length = w*h
-        int width;
-        int height;
+        int[] pixels;   // ABGR, length = w*h
+        int width, height;
     }
 
-    private final Object swapLock = new Object();
-    private volatile FrameBuffer front;  // render thread reads this
-    private volatile long frontSeq;      // sequence number of front buffer
+    private volatile ArrayBlockingQueue<FrameBuffer> frameQueue;
+    private volatile ArrayBlockingQueue<int[]> pixelPool;
 
+    /* ---------- render state (render thread only) ---------- */
     private DynamicTexture texture;
     private ResourceLocation textureId;
     private Path tempDownloadedFile;
-    private int videoWidth;
-    private int videoHeight;
-    private long lastUploadedSeq;  // render thread: last seq it uploaded
+    private Path tempRawFile;           // pre-decoded raw frames
+    private volatile int videoWidth;
+    private volatile int videoHeight;
+    private volatile double videoFps;
+    private long playbackStartNano;
+    private long framesDisplayed;
+    private boolean preBuffering;
+    private volatile Path videoFilePath;
+
+    /* ---------- debug stats ---------- */
+    private volatile int debugQueueSize;
+    private volatile double debugStreamFps;     // file→queue throughput
+    private volatile double debugAvgReadMs;     // avg file read time per frame
+    private volatile int debugDropped;
+    private volatile int debugOutW, debugOutH;
+    private volatile int debugEstTotalFrames;
+    private volatile int debugDecodedFrames;    // frames written by ffmpeg
+    private volatile boolean debugDecodeComplete;
+
+    private long debugRenderFrames;
+    private long debugRenderStartNano;
+    private volatile double debugRenderFps;
+    private long debugUploadTotalNs;
+    private int debugUploadCount;
 
     /* ---------- audio ---------- */
     private AudioPlayer audioPlayer;
 
-    private VideoPlaybackManager() {
-    }
+    private VideoPlaybackManager() {}
 
-    public static VideoPlaybackManager getInstance() {
-        return INSTANCE;
-    }
+    public static VideoPlaybackManager getInstance() { return INSTANCE; }
 
     /* ======================= public API ======================= */
 
     public synchronized void play(String id, String source) {
         stop();
         currentVideoId = id;
-        statusText = "Loading: " + id;
+        statusText = "Loading...";
         running.set(true);
-        lastUploadedSeq = 0;
+
+        // Reset render state
+        playbackStartNano = 0;
+        framesDisplayed = 0;
+        preBuffering = true;
+        debugRenderFrames = 0;
+        debugRenderStartNano = 0;
+        debugRenderFps = 0;
+        debugUploadTotalNs = 0;
+        debugUploadCount = 0;
+        debugDropped = 0;
+        debugDecodedFrames = 0;
+        debugDecodeComplete = false;
+        debugEstTotalFrames = 0;
+        videoFilePath = null;
+
+        frameQueue = new ArrayBlockingQueue<>(QUEUE_CAPACITY);
+        pixelPool = new ArrayBlockingQueue<>(QUEUE_CAPACITY + 4);
 
         long gen = generation.incrementAndGet();
-        decodeThread = new Thread(() -> decodeLoop(id, source, gen), "receptor-video-decoder");
-        decodeThread.setDaemon(true);
-        decodeThread.start();
+        workerThread = new Thread(() -> workerLoop(id, source, gen), "receptor-video-worker");
+        workerThread.setDaemon(true);
+        workerThread.setPriority(Thread.MAX_PRIORITY);
+        workerThread.start();
     }
 
     public synchronized void stop() {
         running.set(false);
-        // Kill ffmpeg video process first
-        Process vp = videoProcess;
-        videoProcess = null;
-        if (vp != null) vp.destroyForcibly();
-        // Stop decode thread
-        Thread t = decodeThread;
-        decodeThread = null;
+        Process p = ffmpegProcess;
+        ffmpegProcess = null;
+        if (p != null) p.destroyForcibly();
+        Thread t = workerThread;
+        workerThread = null;
         if (t != null) {
             t.interrupt();
-            // Wait briefly for the decode thread to finish so it can't write stale frames
-            try {
-                t.join(500);
-            } catch (InterruptedException ignored) {
-                Thread.currentThread().interrupt();
-            }
+            try { t.join(500); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
         }
-        synchronized (swapLock) {
-            front = null;
-            frontSeq = 0;
-        }
+        ArrayBlockingQueue<FrameBuffer> q = frameQueue;
+        if (q != null) q.clear();
+        frameQueue = null;
+        pixelPool = null;
+
         statusText = "";
         currentVideoId = "";
         videoWidth = 0;
         videoHeight = 0;
-        lastUploadedSeq = 0;
+        videoFps = 0;
+        videoFilePath = null;
         clearTexture();
-        deleteTempFile();
+        deleteTempFiles();
         stopAudio();
     }
 
@@ -128,291 +171,352 @@ public final class VideoPlaybackManager {
         if (ap != null) ap.setVolume(this.volume);
     }
 
-    public boolean isRunning()          { return running.get(); }
-    public String  getStatusText()      { return statusText; }
-    public float   getVolume()          { return volume; }
-    public String  getCurrentVideoId()  { return currentVideoId; }
+    public boolean isRunning()         { return running.get(); }
+    public String  getStatusText()     { return statusText; }
+    public float   getVolume()         { return volume; }
+    public String  getCurrentVideoId() { return currentVideoId; }
 
-    /* ======================= render (called on render thread) ======================= */
-
-    // DEV LOGGING: render thread timing
-    private long renderCallCount = 0;
-    private long lastRenderLogTime = 0;
-    private long totalUploadNanos = 0;
-    private long uploadCount = 0;
-    private long framesSkipped = 0;
+    /* ======================= render (render thread ~60fps) ======================= */
 
     public void render(GuiGraphics context) {
-        long renderStart = System.nanoTime();
-        renderCallCount++;
-
-        // Snapshot the current front buffer atomically
-        FrameBuffer fb;
-        long seq;
-        synchronized (swapLock) {
-            fb  = front;
-            seq = frontSeq;
+        debugRenderFrames++;
+        long now = System.nanoTime();
+        if (debugRenderStartNano == 0) debugRenderStartNano = now;
+        long dt = now - debugRenderStartNano;
+        if (dt >= 500_000_000L) {
+            debugRenderFps = debugRenderFrames / (dt / 1_000_000_000.0);
+            debugRenderFrames = 0;
+            debugRenderStartNano = now;
         }
 
-        if (seq != lastUploadedSeq && fb != null) {
-            // Count how many frames were skipped (decode produced frames faster than render consumed)
-            long skipped = seq - lastUploadedSeq - 1;
-            if (skipped > 0) framesSkipped += skipped;
+        ArrayBlockingQueue<FrameBuffer> q = frameQueue;
+        if (q == null) return;
 
-            long uploadStart = System.nanoTime();
-            uploadPixels(fb.pixels, fb.width, fb.height);
-            long uploadElapsed = System.nanoTime() - uploadStart;
-            totalUploadNanos += uploadElapsed;
-            uploadCount++;
-            lastUploadedSeq = seq;
+        // Pre-buffering
+        if (preBuffering) {
+            if (q.size() >= PRE_BUFFER_FRAMES) {
+                preBuffering = false;
+                playbackStartNano = System.nanoTime();
+                framesDisplayed = 0;
+                Path vf = videoFilePath;
+                if (vf != null) startAudio(vf);
+            } else {
+                return;
+            }
         }
 
-        // Draw the current texture (holds last frame when no new data)
+        if (videoFps <= 0) return;
+        long elapsed = System.nanoTime() - playbackStartNano;
+        long targetFrame = (long) (elapsed / (1_000_000_000.0 / videoFps));
+
+        // Pop frames from queue until we reach targetFrame
+        FrameBuffer frameToShow = null;
+        int dropped = 0;
+        while (framesDisplayed <= targetFrame) {
+            FrameBuffer fb = q.poll();
+            if (fb == null) break;
+            if (frameToShow != null) {
+                recyclePixels(frameToShow.pixels);
+                dropped++;
+            }
+            frameToShow = fb;
+            framesDisplayed++;
+        }
+        debugDropped += dropped;
+
+        if (frameToShow != null) {
+            long t0 = System.nanoTime();
+            uploadPixels(frameToShow.pixels, frameToShow.width, frameToShow.height);
+            debugUploadTotalNs += System.nanoTime() - t0;
+            debugUploadCount++;
+            recyclePixels(frameToShow.pixels);
+        }
+
+        // Blit
         if (textureId != null && texture != null && videoWidth > 0 && videoHeight > 0) {
             Minecraft mc = Minecraft.getInstance();
-            int screenW = mc.getWindow().getGuiScaledWidth();
-            int screenH = mc.getWindow().getGuiScaledHeight();
+            int sw = mc.getWindow().getGuiScaledWidth();
+            int sh = mc.getWindow().getGuiScaledHeight();
             context.blit(RenderPipelines.GUI_TEXTURED, textureId,
-                    0, 0,
-                    0.0f, 0.0f,
-                    screenW, screenH,
-                    videoWidth, videoHeight,
-                    videoWidth, videoHeight);
+                    0, 0, 0.0f, 0.0f, sw, sh,
+                    videoWidth, videoHeight, videoWidth, videoHeight);
         }
 
-        // DEV LOG: every 2 seconds
-        long now = System.nanoTime();
-        if (lastRenderLogTime == 0) lastRenderLogTime = now;
-        long elapsed = now - lastRenderLogTime;
-        if (elapsed >= 2_000_000_000L) {
-            double sec = elapsed / 1_000_000_000.0;
-            double renderFps = renderCallCount / sec;
-            double avgUploadMs = uploadCount > 0 ? (totalUploadNanos / (double) uploadCount / 1_000_000.0) : 0;
-            Receptor.LOGGER.info("[DEV-RENDER] renderFPS={} uploads={} avgUploadMs={} framesSkipped={} frontSeq={}",
-                    String.format("%.1f", renderFps), uploadCount,
-                    String.format("%.2f", avgUploadMs), framesSkipped, seq);
-            renderCallCount = 0;
-            totalUploadNanos = 0;
-            uploadCount = 0;
-            framesSkipped = 0;
-            lastRenderLogTime = now;
-        }
+        debugQueueSize = q.size();
     }
 
-    /* ======================= decode thread ======================= */
+    /* ======================= debug HUD ======================= */
 
-    private void decodeLoop(String id, String source, long myGeneration) {
-        Process ffmpegProc = null;
+    public String getDebugLine1() {
+        if (!running.get()) return "";
+        return String.format("rFPS:%.0f  vFPS:%.0f  sFPS:%.1f  Q:%d  drop:%d",
+                debugRenderFps, videoFps, debugStreamFps, debugQueueSize, debugDropped);
+    }
+
+    public String getDebugLine2() {
+        if (!running.get()) return "";
+        double avgUp = debugUploadCount > 0 ? (debugUploadTotalNs / (double) debugUploadCount / 1_000_000.0) : 0;
+        String decStatus = debugDecodeComplete ? "done" :
+                (debugEstTotalFrames > 0
+                        ? (debugDecodedFrames * 100 / debugEstTotalFrames) + "%"
+                        : debugDecodedFrames + "f");
+        return String.format("%dx%d  read:%.1fms  up:%.2fms  dec:%s",
+                debugOutW, debugOutH, debugAvgReadMs, avgUp, decStatus);
+    }
+
+    /* ======================= worker thread ======================= */
+
+    private void workerLoop(String id, String source, long myGen) {
+        Process ffmpeg = null;
+        Path rawFile = null;
+        FileChannel readChannel = null;
         try {
             Path file = resolveSource(source);
 
-            // Locate ffmpeg (required for video decoding)
             String ffmpegCmd = findExecutable("ffmpeg", "ffmpeg.exe");
             if (ffmpegCmd == null) {
                 statusText = "Error: ffmpeg not found";
-                Receptor.LOGGER.error("ffmpeg not found — cannot play video. Install ffmpeg.");
+                Receptor.LOGGER.error("ffmpeg not found");
                 return;
             }
 
-            // ---- Probe video metadata (dimensions + FPS) via ffprobe ----
-            int vw = 0, vh = 0;
+            // ---- Probe dimensions + FPS ----
+            int origW = 0, origH = 0;
             double fps = DEFAULT_FPS;
+            double duration = 0;
             String ffprobeCmd = findExecutable("ffprobe", "ffprobe.exe");
             if (ffprobeCmd != null) {
+                // Probe dimensions + FPS
                 try {
-                    ProcessBuilder probePb = new ProcessBuilder(
+                    ProcessBuilder pb = new ProcessBuilder(
                             ffprobeCmd, "-v", "error",
                             "-select_streams", "v:0",
                             "-show_entries", "stream=width,height,r_frame_rate",
                             "-of", "csv=p=0",
                             file.toAbsolutePath().toString());
-                    probePb.redirectError(ProcessBuilder.Redirect.DISCARD);
-                    Process probe = probePb.start();
+                    pb.redirectError(ProcessBuilder.Redirect.DISCARD);
+                    Process probe = pb.start();
                     String out = new String(probe.getInputStream().readAllBytes()).trim();
                     probe.waitFor(5, TimeUnit.SECONDS);
-                    // Expected format: "480,360,15/1" or "h264,Main,1920,1080,30000/1001"
-                    // ffprobe may prefix codec info — find the w,h,fps portion
                     String[] parts = out.split(",");
                     if (parts.length >= 3) {
-                        // Parse from end: last part is fps fraction, before that height, before that width
                         String fpsStr = parts[parts.length - 1].trim();
-                        vh = Integer.parseInt(parts[parts.length - 2].trim());
-                        vw = Integer.parseInt(parts[parts.length - 3].trim());
+                        origH = Integer.parseInt(parts[parts.length - 2].trim());
+                        origW = Integer.parseInt(parts[parts.length - 3].trim());
                         String[] frac = fpsStr.split("/");
                         fps = Double.parseDouble(frac[0]);
-                        if (frac.length > 1) {
-                            double denom = Double.parseDouble(frac[1]);
-                            if (denom > 0) fps /= denom;
-                        }
+                        if (frac.length > 1 && Double.parseDouble(frac[1]) > 0)
+                            fps /= Double.parseDouble(frac[1]);
                     }
                 } catch (Exception e) {
-                    Receptor.LOGGER.warn("ffprobe metadata extraction failed: {}", e.getMessage());
+                    Receptor.LOGGER.warn("ffprobe dim/fps failed: {}", e.getMessage());
+                }
+                // Probe duration for progress estimate
+                try {
+                    ProcessBuilder pb = new ProcessBuilder(
+                            ffprobeCmd, "-v", "error",
+                            "-show_entries", "format=duration",
+                            "-of", "csv=p=0",
+                            file.toAbsolutePath().toString());
+                    pb.redirectError(ProcessBuilder.Redirect.DISCARD);
+                    Process probe = pb.start();
+                    String out = new String(probe.getInputStream().readAllBytes()).trim();
+                    probe.waitFor(5, TimeUnit.SECONDS);
+                    duration = Double.parseDouble(out.trim());
+                } catch (Exception e) {
+                    Receptor.LOGGER.warn("ffprobe duration failed: {}", e.getMessage());
                 }
             }
+            if (origW <= 0 || origH <= 0) { origW = 480; origH = 360; }
 
-            if (vw <= 0 || vh <= 0) {
-                Receptor.LOGGER.warn("Could not probe video dimensions, defaulting to 480x360");
-                vw = 480;
-                vh = 360;
-            }
-
-            long frameIntervalNanos = (long) (1_000_000_000.0 / fps);
-
-            // Scale down if needed to keep pipe throughput manageable
-            int outW = vw, outH = vh;
+            // Scale down if needed
+            int outW = origW, outH = origH;
             String scaleFilter = null;
-            if (vw > MAX_OUTPUT_WIDTH || vh > MAX_OUTPUT_HEIGHT) {
-                double scaleX = (double) MAX_OUTPUT_WIDTH / vw;
-                double scaleY = (double) MAX_OUTPUT_HEIGHT / vh;
-                double scale = Math.min(scaleX, scaleY);
-                outW = ((int) (vw * scale)) & ~1;  // ensure even
-                outH = ((int) (vh * scale)) & ~1;
+            if (origW > MAX_OUTPUT_WIDTH || origH > MAX_OUTPUT_HEIGHT) {
+                double s = Math.min((double) MAX_OUTPUT_WIDTH / origW, (double) MAX_OUTPUT_HEIGHT / origH);
+                outW = ((int) (origW * s)) & ~1;
+                outH = ((int) (origH * s)) & ~1;
                 scaleFilter = "scale=" + outW + ":" + outH;
             }
 
-            Receptor.LOGGER.info("Playing '{}': {}x{} (output {}x{}) @ {} fps — source={}",
-                    id, vw, vh, outW, outH, String.format("%.2f", fps), file);
+            this.videoFps = fps;
+            this.videoWidth = outW;
+            this.videoHeight = outH;
+            this.debugOutW = outW;
+            this.debugOutH = outH;
+            this.videoFilePath = file;
 
-            // ---- Start audio ----
-            startAudio(file);
+            int frameSize = outW * outH * 4;
+            int pixelCount = outW * outH;
+            int estimatedTotal = duration > 0 ? (int) (duration * fps) : 0;
+            debugEstTotalFrames = estimatedTotal;
+
+            Receptor.LOGGER.info("Video '{}': {}x{} -> {}x{} @ {}fps, est {} frames",
+                    id, origW, origH, outW, outH, String.format("%.2f", fps), estimatedTotal);
+
+            // ========== PHASE 1: Pre-decode to temp file ==========
+            rawFile = Files.createTempFile("receptor_raw_", ".bin");
+            tempRawFile = rawFile;
+
+            java.util.List<String> args = new java.util.ArrayList<>();
+            args.add(ffmpegCmd);
+            args.add("-i"); args.add(file.toAbsolutePath().toString());
+            if (scaleFilter != null) { args.add("-vf"); args.add(scaleFilter); }
+            args.add("-f"); args.add("rawvideo");
+            args.add("-pix_fmt"); args.add("rgba");
+            args.add("-v"); args.add("quiet");
+            args.add("-nostdin");
+            args.add("-y");
+            args.add(rawFile.toAbsolutePath().toString());
+
+            ProcessBuilder videoPb = new ProcessBuilder(args);
+            videoPb.redirectError(ProcessBuilder.Redirect.DISCARD);
+            ffmpeg = videoPb.start();
+            ffmpegProcess = ffmpeg;
+
+            // Wait for early-start threshold (2 seconds of frames)
+            int earlyStartThreshold = Math.max(PRE_BUFFER_FRAMES + 5, (int) (fps * 2));
+            statusText = "Decoding video...";
+
+            while (ffmpeg.isAlive() && running.get() && generation.get() == myGen) {
+                long fileSize = Files.size(rawFile);
+                int framesReady = (int) (fileSize / frameSize);
+                debugDecodedFrames = framesReady;
+
+                if (estimatedTotal > 0) {
+                    int pct = Math.min(100, framesReady * 100 / estimatedTotal);
+                    statusText = "Decoding: " + pct + "% (" + framesReady + " frames)";
+                } else {
+                    statusText = "Decoding: " + framesReady + " frames";
+                }
+
+                if (framesReady >= earlyStartThreshold) break;
+                Thread.sleep(100);
+            }
+
+            if (!running.get() || generation.get() != myGen) return;
+
             statusText = "Playing: " + id;
 
-            // ---- Start ffmpeg for raw RGBA frame output ----
-            // Using ffmpeg instead of JCodec because JCodec 0.2.5 doesn't properly
-            // reorder H.264 B-frames from decode order to presentation order,
-            // which caused the "convulsing back and forth" visual glitch.
-            java.util.List<String> ffmpegArgs = new java.util.ArrayList<>();
-            ffmpegArgs.add(ffmpegCmd);
-            ffmpegArgs.add("-i");
-            ffmpegArgs.add(file.toAbsolutePath().toString());
-            if (scaleFilter != null) {
-                ffmpegArgs.add("-vf");
-                ffmpegArgs.add(scaleFilter);
-            }
-            ffmpegArgs.add("-f");
-            ffmpegArgs.add("rawvideo");
-            ffmpegArgs.add("-pix_fmt");
-            ffmpegArgs.add("rgba");
-            ffmpegArgs.add("-v");
-            ffmpegArgs.add("quiet");
-            ffmpegArgs.add("-nostdin");
-            ffmpegArgs.add("pipe:1");
-            ProcessBuilder videoPb = new ProcessBuilder(ffmpegArgs);
-            videoPb.redirectError(ProcessBuilder.Redirect.DISCARD);
-            ffmpegProc = videoPb.start();
-            this.videoProcess = ffmpegProc;
-
-            InputStream frameStream = ffmpegProc.getInputStream();
-            int frameBytesLen = outW * outH * 4;
-            // Use BufferedInputStream with large buffer to avoid pipe stalls
-            java.io.BufferedInputStream bufferedStream = new java.io.BufferedInputStream(frameStream, frameBytesLen * 4);
-            byte[] frameBytes = new byte[frameBytesLen];
-            int[] framePixels = new int[outW * outH];
-
-            long seq = 0;
-            long nextFrameAt = System.nanoTime();
-
-            // DEV LOGGING: decode thread timing
-            long decodeLogStart = System.nanoTime();
-            long totalReadNanos = 0;
-            long totalConvertNanos = 0;
-            long totalWaitNanos = 0;
-            int framesDecoded = 0;
-            int fellBehindCount = 0;
-
-            while (running.get() && generation.get() == myGeneration) {
-                // Read exactly one frame of raw RGBA pixels
-                long readStart = System.nanoTime();
-                int totalRead = 0;
-                while (totalRead < frameBytesLen) {
-                    int n = bufferedStream.read(frameBytes, totalRead, frameBytesLen - totalRead);
-                    if (n == -1) break;
-                    totalRead += n;
+            // ========== PHASE 2: Stream from file into queue ==========
+            ArrayBlockingQueue<int[]> pool = this.pixelPool;
+            if (pool != null) {
+                for (int i = 0; i < QUEUE_CAPACITY + 2; i++) {
+                    pool.offer(new int[pixelCount]);
                 }
-                if (totalRead < frameBytesLen) break; // EOF
-                long readElapsed = System.nanoTime() - readStart;
-                totalReadNanos += readElapsed;
+            }
 
-                // Reinterpret RGBA bytes as little-endian ints
-                long convertStart = System.nanoTime();
-                ByteBuffer.wrap(frameBytes).order(ByteOrder.LITTLE_ENDIAN)
-                        .asIntBuffer().get(framePixels, 0, outW * outH);
+            readChannel = FileChannel.open(rawFile, StandardOpenOption.READ);
+            ByteBuffer readBuf = ByteBuffer.allocateDirect(frameSize);
+            readBuf.order(ByteOrder.LITTLE_ENDIAN);
+            int framesRead = 0;
 
-                // Publish to front buffer (clone because we reuse framePixels array)
+            // Stats
+            long logStart = System.nanoTime();
+            long totalReadNs = 0;
+            int logFrames = 0;
+
+            while (running.get() && generation.get() == myGen) {
+                // Check how many frames are available on disk
+                long fileSize = Files.size(rawFile);
+                int framesAvailable = (int) (fileSize / frameSize);
+                debugDecodedFrames = framesAvailable;
+
+                if (framesRead >= framesAvailable) {
+                    // Caught up with decoder
+                    if (!ffmpeg.isAlive()) {
+                        debugDecodeComplete = true;
+                        break; // all frames read
+                    }
+                    Thread.sleep(5);
+                    continue;
+                }
+
+                // Read one frame from file
+                long t0 = System.nanoTime();
+                readBuf.clear();
+                long filePos = (long) framesRead * frameSize;
+                int totalRead = 0;
+                while (totalRead < frameSize) {
+                    int r = readChannel.read(readBuf, filePos + totalRead);
+                    if (r < 0) break;
+                    totalRead += r;
+                }
+                if (totalRead < frameSize) {
+                    if (!ffmpeg.isAlive()) break;
+                    Thread.sleep(5);
+                    continue;
+                }
+                totalReadNs += System.nanoTime() - t0;
+
+                // Convert to int[] (RGBA bytes → ABGR ints via LE reinterpret)
+                int[] pixels = (pool != null) ? pool.poll() : null;
+                if (pixels == null || pixels.length != pixelCount) {
+                    pixels = new int[pixelCount];
+                }
+                readBuf.flip();
+                readBuf.asIntBuffer().get(pixels, 0, pixelCount);
+
                 FrameBuffer fb = new FrameBuffer();
-                fb.pixels = framePixels.clone();
+                fb.pixels = pixels;
                 fb.width = outW;
                 fb.height = outH;
-                long convertElapsed = System.nanoTime() - convertStart;
-                totalConvertNanos += convertElapsed;
 
-                seq++;
-                synchronized (swapLock) {
-                    front = fb;
-                    frontSeq = seq;
+                ArrayBlockingQueue<FrameBuffer> q = this.frameQueue;
+                if (q != null) {
+                    q.put(fb); // blocks when full — natural throttle
                 }
 
-                framesDecoded++;
+                framesRead++;
+                logFrames++;
 
-                // ---- Pace at video FPS: hybrid sleep + spin-wait for precision ----
-                nextFrameAt += frameIntervalNanos;
+                // Update stats every 2s
                 long now = System.nanoTime();
-                long remaining = nextFrameAt - now;
-                if (remaining > 0) {
-                    long waitStart = System.nanoTime();
-                    // Sleep for bulk of wait, leaving 2ms for spin
-                    long sleepNanos = remaining - 2_000_000L;
-                    if (sleepNanos > 0) {
-                        Thread.sleep(sleepNanos / 1_000_000, (int) (sleepNanos % 1_000_000));
-                    }
-                    // Spin-wait for the last ~2ms for precise timing
-                    while (System.nanoTime() < nextFrameAt) {
-                        Thread.onSpinWait();
-                    }
-                    totalWaitNanos += System.nanoTime() - waitStart;
-                } else {
-                    // Fell behind — reset clock to avoid burst catching up
-                    fellBehindCount++;
-                    nextFrameAt = System.nanoTime();
-                }
-
-                // DEV LOG: every 2 seconds from decode thread
-                long decodeNow = System.nanoTime();
-                long decodeElapsed = decodeNow - decodeLogStart;
-                if (decodeElapsed >= 2_000_000_000L) {
-                    double sec = decodeElapsed / 1_000_000_000.0;
-                    double decodeFps = framesDecoded / sec;
-                    double avgReadMs = framesDecoded > 0 ? (totalReadNanos / (double) framesDecoded / 1_000_000.0) : 0;
-                    double avgConvertMs = framesDecoded > 0 ? (totalConvertNanos / (double) framesDecoded / 1_000_000.0) : 0;
-                    double avgWaitMs = framesDecoded > 0 ? (totalWaitNanos / (double) framesDecoded / 1_000_000.0) : 0;
-                    Receptor.LOGGER.info("[DEV-DECODE] decodeFPS={} frames={} avgReadMs={} avgConvertMs={} avgWaitMs={} fellBehind={}",
-                            String.format("%.1f", decodeFps), framesDecoded,
-                            String.format("%.2f", avgReadMs),
-                            String.format("%.2f", avgConvertMs),
-                            String.format("%.2f", avgWaitMs),
-                            fellBehindCount);
-                    decodeLogStart = decodeNow;
-                    totalReadNanos = 0;
-                    totalConvertNanos = 0;
-                    totalWaitNanos = 0;
-                    framesDecoded = 0;
-                    fellBehindCount = 0;
+                if (now - logStart >= 2_000_000_000L) {
+                    double sec = (now - logStart) / 1_000_000_000.0;
+                    debugStreamFps = logFrames / sec;
+                    debugAvgReadMs = logFrames > 0 ? (totalReadNs / (double) logFrames / 1_000_000.0) : 0;
+                    Receptor.LOGGER.info("[STREAM] fps={} avgRead={}ms queue={} decoded={}/{}",
+                            String.format("%.1f", debugStreamFps),
+                            String.format("%.2f", debugAvgReadMs),
+                            q != null ? q.size() : 0,
+                            framesAvailable,
+                            estimatedTotal > 0 ? estimatedTotal : "?");
+                    logStart = now;
+                    totalReadNs = 0;
+                    logFrames = 0;
                 }
             }
+
+            debugDecodeComplete = true;
+
+            // Wait for queue to drain (video to finish playing)
+            ArrayBlockingQueue<FrameBuffer> q = this.frameQueue;
+            while (running.get() && generation.get() == myGen && q != null && !q.isEmpty()) {
+                Thread.sleep(50);
+            }
+
         } catch (InterruptedException ignored) {
             Thread.currentThread().interrupt();
         } catch (Exception ex) {
-            Receptor.LOGGER.error("Failed to play video '{}' from source '{}'", id, source, ex);
+            Receptor.LOGGER.error("Failed to play video '{}': {}", id, ex.getMessage(), ex);
             statusText = "Error: " + id;
         } finally {
-            if (ffmpegProc != null) ffmpegProc.destroyForcibly();
-            // Only update shared state if still the current generation
-            if (generation.get() == myGeneration) {
-                this.videoProcess = null;
+            if (readChannel != null) {
+                try { readChannel.close(); } catch (IOException ignored) {}
+            }
+            if (ffmpeg != null) ffmpeg.destroyForcibly();
+            if (generation.get() == myGen) {
+                ffmpegProcess = null;
                 running.set(false);
-                deleteTempFile();
+                deleteTempFiles();
             }
         }
+    }
+
+    private void recyclePixels(int[] arr) {
+        ArrayBlockingQueue<int[]> pool = this.pixelPool;
+        if (pool != null && arr != null) pool.offer(arr);
     }
 
     /* ======================= helpers ======================= */
@@ -420,114 +524,71 @@ public final class VideoPlaybackManager {
     private Path resolveSource(String source) throws IOException, InterruptedException {
         if (source.startsWith("http://") || source.startsWith("https://")) {
             statusText = "Downloading video...";
-            HttpClient client = HttpClient.newBuilder()
-                    .connectTimeout(Duration.ofSeconds(15))
-                    .build();
+            HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15)).build();
             HttpRequest request = HttpRequest.newBuilder(URI.create(source))
-                    .timeout(Duration.ofMinutes(5))
-                    .GET()
-                    .build();
-
+                    .timeout(Duration.ofMinutes(5)).GET().build();
             Path downloaded = Files.createTempFile("receptor-video-", ".mp4");
             HttpResponse<Path> response = client.send(request, HttpResponse.BodyHandlers.ofFile(downloaded));
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
                 Files.deleteIfExists(downloaded);
-                throw new IOException("Unexpected HTTP status: " + response.statusCode());
+                throw new IOException("HTTP " + response.statusCode());
             }
             tempDownloadedFile = downloaded;
             return downloaded;
         }
-
         Path localPath = Path.of(source);
-        if (!Files.exists(localPath)) {
-            throw new IOException("Video file does not exist on client: " + source);
-        }
+        if (!Files.exists(localPath)) throw new IOException("File not found: " + source);
         return localPath;
     }
 
-    /**
-     * Upload pre-converted ABGR pixels to the GPU texture using bulk memcpy.
-     * Called on the render thread only.
-     */
     private void uploadPixels(int[] pixels, int w, int h) {
         Minecraft mc = Minecraft.getInstance();
         if (mc == null) return;
-
         this.videoWidth = w;
         this.videoHeight = h;
 
-        // Fast path: reuse existing NativeImage (same dimensions) — bulk memcpy
         if (texture != null && textureId != null) {
             NativeImage existing = texture.getPixels();
             if (existing != null && existing.getWidth() == w && existing.getHeight() == h) {
-                bulkCopyToNativeImage(existing, pixels, w, h);
+                bulkCopy(existing, pixels, w, h);
                 texture.upload();
                 return;
             }
         }
-
-        // Slow path: first frame or dimension change
-        NativeImage nativeImage = new NativeImage(w, h, false);
-        bulkCopyToNativeImage(nativeImage, pixels, w, h);
-
-        if (texture != null) {
-            texture.close();
-            texture = null;
-        }
-        if (textureId == null) {
-            textureId = ResourceLocation.parse("receptor:video_overlay");
-        }
-
-        texture = new DynamicTexture(() -> "receptor_video", nativeImage);
+        NativeImage img = new NativeImage(w, h, false);
+        bulkCopy(img, pixels, w, h);
+        if (texture != null) { texture.close(); texture = null; }
+        if (textureId == null) textureId = ResourceLocation.parse("receptor:video_overlay");
+        texture = new DynamicTexture(() -> "receptor_video", img);
         mc.getTextureManager().register(textureId, texture);
         texture.upload();
     }
 
-    /**
-     * Copies an int[] of ABGR pixel data into a NativeImage using a single
-     * bulk put via LWJGL's MemoryUtil, instead of per-pixel setPixel() calls.
-     * This is ~50-100x faster for large images.
-     */
-    private static void bulkCopyToNativeImage(NativeImage image, int[] pixels, int w, int h) {
-        // NativeImage has a public getPointer() in MC 1.21.6 (Mojang mappings),
-        // which gives direct access to the native pixel memory.
+    private static void bulkCopy(NativeImage image, int[] pixels, int w, int h) {
         try {
             long ptr = image.getPointer();
             if (ptr != 0L) {
-                IntBuffer intBuf = MemoryUtil.memIntBuffer(ptr, w * h);
-                intBuf.put(0, pixels, 0, w * h);
+                MemoryUtil.memIntBuffer(ptr, w * h).put(0, pixels, 0, w * h);
                 return;
             }
-        } catch (Exception ignored) {
-            // Fall through to per-pixel path
-        }
-        // Fallback: per-pixel (should rarely happen)
+        } catch (Exception ignored) {}
         for (int y = 0; y < h; y++) {
-            int rowOff = y * w;
-            for (int x = 0; x < w; x++) {
-                image.setPixel(x, y, pixels[rowOff + x]);
-            }
+            int off = y * w;
+            for (int x = 0; x < w; x++) image.setPixel(x, y, pixels[off + x]);
         }
     }
 
-    /* ---------- executable lookup ---------- */
-
-    /** Tries to find a command on the system PATH. Returns the first that works, or null. */
     private static String findExecutable(String... names) {
         for (String cmd : names) {
             try {
                 Process p = new ProcessBuilder(cmd, "-version")
                         .redirectError(ProcessBuilder.Redirect.DISCARD)
-                        .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-                        .start();
+                        .redirectOutput(ProcessBuilder.Redirect.DISCARD).start();
                 if (p.waitFor(5, TimeUnit.SECONDS) && p.exitValue() == 0) return cmd;
-            } catch (Exception ignored) {
-            }
+            } catch (Exception ignored) {}
         }
         return null;
     }
-
-    /* ---------- audio ---------- */
 
     private void startAudio(Path videoFile) {
         try {
@@ -545,23 +606,19 @@ public final class VideoPlaybackManager {
         if (ap != null) ap.stop();
     }
 
-    /* ---------- cleanup ---------- */
-
     private synchronized void clearTexture() {
-        if (texture != null) {
-            texture.close();
-            texture = null;
-        }
+        if (texture != null) { texture.close(); texture = null; }
         textureId = null;
     }
 
-    private synchronized void deleteTempFile() {
+    private synchronized void deleteTempFiles() {
         if (tempDownloadedFile != null) {
-            try {
-                Files.deleteIfExists(tempDownloadedFile);
-            } catch (IOException ignored) {
-            }
+            try { Files.deleteIfExists(tempDownloadedFile); } catch (IOException ignored) {}
             tempDownloadedFile = null;
+        }
+        if (tempRawFile != null) {
+            try { Files.deleteIfExists(tempRawFile); } catch (IOException ignored) {}
+            tempRawFile = null;
         }
     }
 }
