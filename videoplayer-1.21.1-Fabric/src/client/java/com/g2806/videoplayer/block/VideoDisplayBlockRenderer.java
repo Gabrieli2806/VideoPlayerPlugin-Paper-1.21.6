@@ -4,12 +4,15 @@ import com.g2806.videoplayer.video.VideoPlaybackManager;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.mojang.math.Axis;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.Font;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.blockentity.BlockEntityRenderer;
 import net.minecraft.client.renderer.blockentity.BlockEntityRendererProvider;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
@@ -44,19 +47,28 @@ public class VideoDisplayBlockRenderer implements BlockEntityRenderer<VideoDispl
         VideoPlaybackManager manager = VideoPlaybackManager.getInstance();
         if (!manager.isRunning() || !manager.isBlockMode()) return;
 
-        ResourceLocation texId = manager.getTextureId();
-        if (texId == null) return;
-
-        int videoW = manager.getVideoWidth();
-        int videoH = manager.getVideoHeight();
-        if (videoW <= 0 || videoH <= 0) return;
-
         Level level = entity.getLevel();
         if (level == null) return;
 
         BlockPos pos = entity.getBlockPos();
         BlockState state = entity.getBlockState();
         Direction facing = state.getValue(VideoDisplayBlock.FACING);
+
+        // Show status text on the block face while loading / decoding
+        String status = manager.getStatusText();
+        boolean hasStatus = !status.isEmpty() &&
+                (status.startsWith("Loading") || status.startsWith("Decoding") || status.startsWith("Downloading"));
+
+        ResourceLocation texId = manager.getTextureId();
+        int videoW = manager.getVideoWidth();
+        int videoH = manager.getVideoHeight();
+
+        if (hasStatus || texId == null || videoW <= 0 || videoH <= 0) {
+            if (hasStatus) {
+                renderStatusText("[VideoPlayer] " + status, poseStack, bufferSource, facing);
+            }
+            return;
+        }
 
         // Determine the local axes for the screen rectangle
         // "right" is the horizontal axis when looking at the front face
@@ -175,5 +187,58 @@ public class VideoDisplayBlockRenderer implements BlockEntityRenderer<VideoDispl
         BlockState bs = level.getBlockState(check);
         if (!(bs.getBlock() instanceof VideoDisplayBlock)) return false;
         return bs.getValue(VideoDisplayBlock.FACING) == facing;
+    }
+
+    /**
+     * Renders a status string (e.g. "[VideoPlayer] Decoding: 2x (31 frames)")
+     * centered on the front face of the block in green text.
+     */
+    private static void renderStatusText(String text, PoseStack poseStack,
+                                          MultiBufferSource bufferSource, Direction facing) {
+        Font font = Minecraft.getInstance().font;
+        int textPixels = font.width(text);
+        if (textPixels == 0) return;
+
+        // Scale so the text fills 75% of the block face width
+        float scaleF = 0.75f / textPixels;
+        // Font height is 8 px; with Y-flip the text grows upward from the anchor point
+        float textBlockH = 8 * scaleF;
+
+        poseStack.pushPose();
+
+        // Apply the same facing rotation used for the video quad
+        poseStack.translate(0.5, 0.5, 0.5);
+        float yRot = switch (facing) {
+            case NORTH -> 0f;
+            case SOUTH -> 180f;
+            case WEST  -> 90f;
+            case EAST  -> -90f;
+            default    -> 0f;
+        };
+        poseStack.mulPose(Axis.YP.rotationDegrees(yRot));
+        poseStack.translate(-0.5, -0.5, -0.5);
+
+        // Center the text on the face
+        float anchorX = (1.0f - 0.75f) / 2.0f;       // left edge of text in block units
+        float anchorY = 0.5f + textBlockH / 2.0f;     // top of text: center + half height
+
+        // Sit just in front of the face to avoid z-fighting
+        poseStack.translate(anchorX, anchorY, -0.003f);
+        // Scale: positive X stays left→right; negative Y flips font's top-down to bottom-up
+        poseStack.scale(scaleF, -scaleF, scaleF);
+
+        font.drawInBatch(
+                Component.literal(text),
+                0f, 0f,
+                0x55FF55,          // green
+                false,
+                poseStack.last().pose(),
+                bufferSource,
+                Font.DisplayMode.NORMAL,
+                0x88000000,        // dark semi-transparent background behind each glyph
+                FULL_BRIGHT
+        );
+
+        poseStack.popPose();
     }
 }

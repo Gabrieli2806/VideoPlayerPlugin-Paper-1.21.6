@@ -40,18 +40,21 @@ public final class VideoHudOverlay {
             }
         }
 
-        // Status text while loading/decoding (centered on screen)
-        String status = manager.getStatusText();
-        if (!status.isEmpty() && (status.startsWith("Loading") || status.startsWith("Decoding") || status.startsWith("Downloading"))) {
-            var font = Minecraft.getInstance().font;
-            String display = "[VideoPlayer] " + status;
-            int textW = font.width(display);
-            int screenW = Minecraft.getInstance().getWindow().getGuiScaledWidth();
-            int screenH = Minecraft.getInstance().getWindow().getGuiScaledHeight();
-            int x = (screenW - textW) / 2;
-            int y = screenH / 2 - 5;
-            drawContext.fill(x - 6, y - 4, x + textW + 6, y + 14, 0xCC000000);
-            drawContext.drawString(font, Component.literal(display), x, y, 0x55FF55, true);
+        // Status text while loading/decoding – only in HUD mode.
+        // In block mode the status is rendered directly on the block faces.
+        if (!manager.isBlockMode()) {
+            String status = manager.getStatusText();
+            if (!status.isEmpty() && (status.startsWith("Loading") || status.startsWith("Decoding") || status.startsWith("Downloading"))) {
+                var font = Minecraft.getInstance().font;
+                String display = "[VideoPlayer] " + status;
+                int textW = font.width(display);
+                int screenW = Minecraft.getInstance().getWindow().getGuiScaledWidth();
+                int screenH = Minecraft.getInstance().getWindow().getGuiScaledHeight();
+                int x = (screenW - textW) / 2;
+                int y = screenH / 2 - 5;
+                drawContext.fill(x - 6, y - 4, x + textW + 6, y + 14, 0xCC000000);
+                drawContext.drawString(font, Component.literal(display), x, y, 0x55FF55, true);
+            }
         }
     }
 }
