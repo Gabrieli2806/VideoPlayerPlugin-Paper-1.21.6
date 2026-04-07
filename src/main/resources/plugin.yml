@@ -6,24 +6,25 @@ authors: [nightmare]
 description: Paper bridge for VideoPlayerMod client playback
 
 commands:
-  cinematic:
+  videoplay:
     description: Play/stop/list videos and set volume
-    usage: /cinematic <play|stop|list|volume>
+    usage: /videoplay <play|stop|list|volume|reload>
     permission: videoplayermod.command
+    aliases: [cinematic]
 
 permissions:
   videoplayermod.command:
-    description: Base permission for /cinematic
+    description: Base permission for /videoplay
     default: op
   videoplayermod.play:
-    description: Allows /cinematic play
+    description: Allows /videoplay play
     default: op
   videoplayermod.stop:
-    description: Allows /cinematic stop
+    description: Allows /videoplay stop
     default: op
   videoplayermod.list:
-    description: Allows /cinematic list
+    description: Allows /videoplay list
     default: op
   videoplayermod.volume:
-    description: Allows /cinematic volume
+    description: Allows /videoplay volume
     default: op

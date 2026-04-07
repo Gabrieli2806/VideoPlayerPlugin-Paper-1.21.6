@@ -1,0 +1,26 @@
+Manifest-Version: 1.0
+Main-Class: org.bukkit.craftbukkit.Main
+Implementation-Title: Paper
+Implementation-Version: 1.21.6-48-4d854e6
+Implementation-Vendor: 2025-06-30 11:39:07 +0200
+Specification-Title: Paper
+Specification-Version: 1.21.6-R0.1-SNAPSHOT
+Specification-Vendor: Paper Team
+Brand-Id: papermc:paper
+Brand-Name: Paper
+Build-Number: 48
+Build-Time: 2025-06-30T09:48:37.501946590Z
+Git-Branch: main
+Git-Commit: 4d854e6
+Included-Mappings-Hash: D2EFADD87475055C036E3C438747F048458ACE3831E9DB9B
+ BADBA62C52AB2C32
+
+Name: org/bukkit
+Sealed: true
+
+Name: net/bukkit
+Sealed: true
+
+Name: com/bukkit
+Sealed: true
+

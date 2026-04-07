@@ -9,6 +9,8 @@ import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.resources.ResourceLocation;
 import org.lwjgl.system.MemoryUtil;
 
+import net.fabricmc.loader.api.FabricLoader;
+
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -108,6 +110,40 @@ public final class VideoPlaybackManager {
     /* ======================= public API ======================= */
 
     public synchronized void play(String id, String source) {
+        // If this is a transfer:// source, just set up state and wait for chunks.
+        // The actual file path will be provided by onTransferComplete() once transfer finishes.
+        if (source.startsWith("transfer://")) {
+            stop();
+            currentVideoId = id;
+            statusText = "Waiting for video transfer...";
+            running.set(true);
+            // Don't start the worker yet — we don't have the file.
+            // The transfer receiver will call onTransferComplete() when done.
+            Receptor.LOGGER.info("Awaiting chunked transfer for video '{}' ({})", id, source);
+            return;
+        }
+
+        startWorker(id, source);
+    }
+
+    /**
+     * Called by VideoTransferReceiver when the chunked file transfer is complete.
+     * Starts the normal decode+play pipeline with the assembled file.
+     */
+    public synchronized void onTransferComplete(String videoId, Path filePath) {
+        Receptor.LOGGER.info("Transfer complete for '{}', starting playback from: {}", videoId, filePath);
+        // Start the worker with the local file path
+        startWorker(videoId, filePath.toAbsolutePath().toString());
+    }
+
+    /**
+     * Called by VideoTransferReceiver to update the HUD status during transfer.
+     */
+    public void setTransferStatus(String status) {
+        this.statusText = status;
+    }
+
+    private synchronized void startWorker(String id, String source) {
         stop();
         currentVideoId = id;
         statusText = "Loading...";
@@ -521,24 +557,118 @@ public final class VideoPlaybackManager {
 
     /* ======================= helpers ======================= */
 
+    /**
+     * Resolves a video source to a local file path.
+     * Search order:
+     *   1. If URL → download to temp file
+     *   2. If absolute/relative path exists on this machine → use it (same machine / dev)
+     *   3. Look in the CLIENT's own config/videoplayermod/videos/ folder by filename
+     *   4. Look in the CLIENT's folder using the video ID + common extensions
+     */
     private Path resolveSource(String source) throws IOException, InterruptedException {
+        // 1) URL download
         if (source.startsWith("http://") || source.startsWith("https://")) {
-            statusText = "Downloading video...";
-            HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15)).build();
-            HttpRequest request = HttpRequest.newBuilder(URI.create(source))
-                    .timeout(Duration.ofMinutes(5)).GET().build();
-            Path downloaded = Files.createTempFile("receptor-video-", ".mp4");
-            HttpResponse<Path> response = client.send(request, HttpResponse.BodyHandlers.ofFile(downloaded));
-            if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                Files.deleteIfExists(downloaded);
-                throw new IOException("HTTP " + response.statusCode());
+            String originalUrl = source;
+            // Fix the URL host: replace server's auto-detected IP with the IP we're actually connected to
+            source = fixUrlHost(source);
+
+            statusText = "Connecting to " + source + "...";
+            Receptor.LOGGER.info("Downloading video from URL: {}", source);
+            Receptor.LOGGER.info("  (original URL from server: {})", originalUrl);
+
+            // Try with rewritten URL first, then fall back to original if different
+            Path result = tryDownload(source);
+            if (result != null) return result;
+
+            // If rewritten URL failed and original is different, try original
+            if (!source.equals(originalUrl)) {
+                Receptor.LOGGER.info("Rewritten URL failed, trying original: {}", originalUrl);
+                statusText = "Retrying with original URL...";
+                result = tryDownload(originalUrl);
+                if (result != null) return result;
             }
-            tempDownloadedFile = downloaded;
-            return downloaded;
+
+            throw new IOException("Cannot download video. Server HTTP port (8190) may not be open.\n"
+                    + "Tried: " + source + (source.equals(originalUrl) ? "" : "\nAlso tried: " + originalUrl));
         }
+
+        // 2) Direct path (works on same machine or if player placed the file manually)
         Path localPath = Path.of(source);
-        if (!Files.exists(localPath)) throw new IOException("File not found: " + source);
-        return localPath;
+        if (Files.exists(localPath)) {
+            Receptor.LOGGER.info("Video source found at direct path: {}", localPath);
+            return localPath;
+        }
+
+        // 3) Client-side video folder — try the filename from the server path
+        Path clientVideosDir = FabricLoader.getInstance().getGameDir()
+                .resolve("config").resolve("videoplayermod").resolve("videos");
+        Files.createDirectories(clientVideosDir);
+
+        String fileName = localPath.getFileName().toString();
+        Path inClientDir = clientVideosDir.resolve(fileName);
+        if (Files.exists(inClientDir)) {
+            Receptor.LOGGER.info("Video found in client videos folder: {}", inClientDir);
+            return inClientDir;
+        }
+
+        // 4) Try video ID + common extensions
+        String videoId = currentVideoId;
+        if (videoId != null && !videoId.isEmpty()) {
+            for (String ext : new String[]{".mp4", ".webm", ".mkv", ".avi", ".mov"}) {
+                Path candidate = clientVideosDir.resolve(videoId + ext);
+                if (Files.exists(candidate)) {
+                    Receptor.LOGGER.info("Video found by ID in client folder: {}", candidate);
+                    return candidate;
+                }
+            }
+        }
+
+        throw new IOException("Video file not found. Place it in: " + clientVideosDir.toAbsolutePath()
+                + "  (expected: " + fileName + " or " + videoId + ".mp4)");
+    }
+
+    /**
+     * Replaces the host in an HTTP URL with the actual Minecraft server IP the client is connected to.
+     * This fixes the common case where the server auto-detects its LAN IP (e.g. 192.168.1.5)
+     * but the client connects via a different IP (public IP, domain name, etc.).
+     */
+    private String fixUrlHost(String url) {
+        try {
+            Minecraft mc = Minecraft.getInstance();
+            if (mc == null) return url;
+            var serverData = mc.getCurrentServer();
+            if (serverData == null) return url;
+
+            String serverIp = serverData.ip; // e.g. "play.myserver.com:25565" or "123.45.67.89"
+            if (serverIp == null || serverIp.isEmpty()) return url;
+
+            // Strip the MC port if present (we keep the HTTP port from the URL)
+            String mcHost;
+            if (serverIp.startsWith("[")) {
+                // IPv6: [::1]:25565
+                int bracket = serverIp.indexOf(']');
+                mcHost = serverIp.substring(1, bracket > 0 ? bracket : serverIp.length());
+            } else if (serverIp.contains(":")) {
+                mcHost = serverIp.substring(0, serverIp.lastIndexOf(':'));
+            } else {
+                mcHost = serverIp;
+            }
+
+            // If connecting to localhost/127.0.0.1, don't replace (same machine works fine)
+            if (mcHost.equals("127.0.0.1") || mcHost.equalsIgnoreCase("localhost")) {
+                return url;
+            }
+
+            URI original = URI.create(url);
+            String newUrl = original.getScheme() + "://" + mcHost + ":" + original.getPort() + original.getPath();
+            if (!newUrl.equals(url)) {
+                Receptor.LOGGER.info("Rewrote video URL host: {} -> {}", url, newUrl);
+            }
+            return newUrl;
+        } catch (Exception e) {
+            Receptor.LOGGER.warn("Failed to fix URL host, using original: {}", e.getMessage());
+            return url;
+        }
     }
 
     private void uploadPixels(int[] pixels, int w, int h) {
@@ -575,6 +705,77 @@ public final class VideoPlaybackManager {
         for (int y = 0; y < h; y++) {
             int off = y * w;
             for (int x = 0; x < w; x++) image.setPixel(x, y, pixels[off + x]);
+        }
+    }
+
+    /**
+     * Attempts to download a video from the given URL.
+     * Returns the downloaded Path on success, null on connection failure.
+     */
+    private Path tryDownload(String url) throws InterruptedException {
+        try {
+            HttpClient client = HttpClient.newBuilder()
+                    .connectTimeout(Duration.ofSeconds(10))
+                    .followRedirects(HttpClient.Redirect.NORMAL)
+                    .build();
+            HttpRequest request = HttpRequest.newBuilder(URI.create(url))
+                    .timeout(Duration.ofMinutes(10)).GET().build();
+
+            HttpResponse<java.io.InputStream> response = client.send(request,
+                    HttpResponse.BodyHandlers.ofInputStream());
+
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                Receptor.LOGGER.warn("HTTP {} from {}", response.statusCode(), url);
+                return null;
+            }
+
+            long contentLength = response.headers().firstValueAsLong("Content-Length").orElse(-1);
+            Path downloaded = Files.createTempFile("receptor-video-", ".mp4");
+
+            try (java.io.InputStream is = response.body();
+                 java.io.OutputStream os = Files.newOutputStream(downloaded)) {
+                byte[] buf = new byte[65536];
+                long totalRead = 0;
+                int read;
+                long lastUpdate = System.currentTimeMillis();
+
+                while ((read = is.read(buf)) != -1) {
+                    if (!running.get()) {
+                        Files.deleteIfExists(downloaded);
+                        throw new InterruptedException("Download cancelled");
+                    }
+                    os.write(buf, 0, read);
+                    totalRead += read;
+
+                    long now = System.currentTimeMillis();
+                    if (now - lastUpdate >= 200) {
+                        if (contentLength > 0) {
+                            int pct = (int) (totalRead * 100 / contentLength);
+                            String sizeMB = String.format("%.1f", totalRead / 1048576.0);
+                            String totalMB = String.format("%.1f", contentLength / 1048576.0);
+                            statusText = "Downloading: " + pct + "% (" + sizeMB + "/" + totalMB + " MB)";
+                        } else {
+                            String sizeMB = String.format("%.1f", totalRead / 1048576.0);
+                            statusText = "Downloading: " + sizeMB + " MB";
+                        }
+                        lastUpdate = now;
+                    }
+                }
+            } catch (IOException e) {
+                Files.deleteIfExists(downloaded);
+                throw e;
+            }
+
+            Receptor.LOGGER.info("Download complete: {} ({} bytes)", downloaded, Files.size(downloaded));
+            tempDownloadedFile = downloaded;
+            return downloaded;
+        } catch (java.net.http.HttpConnectTimeoutException | java.net.ConnectException e) {
+            Receptor.LOGGER.warn("Connection failed to {}: {}", url, e.getMessage());
+            statusText = "Error: Cannot connect to " + url;
+            return null;
+        } catch (IOException e) {
+            Receptor.LOGGER.warn("Download failed from {}: {}", url, e.getMessage());
+            return null;
         }
     }
 

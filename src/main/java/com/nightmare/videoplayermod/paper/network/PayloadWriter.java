@@ -23,6 +23,26 @@ public final class PayloadWriter {
         return this;
     }
 
+    public PayloadWriter writeInt(int value) {
+        output.write((value >>> 24) & 0xFF);
+        output.write((value >>> 16) & 0xFF);
+        output.write((value >>> 8) & 0xFF);
+        output.write(value & 0xFF);
+        return this;
+    }
+
+    public PayloadWriter writeLong(long value) {
+        for (int i = 56; i >= 0; i -= 8) {
+            output.write((int) ((value >>> i) & 0xFF));
+        }
+        return this;
+    }
+
+    public PayloadWriter writeBytes(byte[] data, int offset, int length) {
+        output.write(data, offset, length);
+        return this;
+    }
+
     public byte[] toByteArray() {
         return output.toByteArray();
     }

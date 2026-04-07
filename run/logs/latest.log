@@ -1,59 +1,75 @@
-[17:58:35] [ServerMain/INFO]: [bootstrap] Running Java 21 (OpenJDK 64-Bit Server VM 21.0.5+11-LTS; Eclipse Adoptium Temurin-21.0.5+11) on Windows 11 10.0 (amd64)
-[17:58:35] [ServerMain/INFO]: [bootstrap] Loading Paper 1.21.6-48-main@4d854e6 (2025-06-30T09:48:37Z) for Minecraft 1.21.6
-[17:58:36] [ServerMain/INFO]: [PluginInitializerManager] Initializing plugins...
-[17:58:36] [Paper Plugin Remapper Thread - 2/INFO]: [PluginRemapper] Remapping plugin 'C:\Users\andre\Desktop\VideoPlayerPlugin-Paper-1.21.6\build\libs\VideoPlayerPlugin-Paper-1.21.6-1.0.0.jar'...
-[17:58:36] [Paper Plugin Remapper Thread - 2/INFO]: [PluginRemapper] Done remapping plugin 'C:\Users\andre\Desktop\VideoPlayerPlugin-Paper-1.21.6\build\libs\VideoPlayerPlugin-Paper-1.21.6-1.0.0.jar' in 394ms.
-[17:58:36] [ServerMain/INFO]: [PluginInitializerManager] Initialized 1 plugin
-[17:58:36] [ServerMain/INFO]: [PluginInitializerManager] Bukkit plugins (1):
+[12:57:42] [ServerMain/INFO]: [bootstrap] Running Java 21 (OpenJDK 64-Bit Server VM 21.0.5+11-LTS; Eclipse Adoptium Temurin-21.0.5+11) on Windows 11 10.0 (amd64)
+[12:57:42] [ServerMain/INFO]: [bootstrap] Loading Paper 1.21.6-48-main@4d854e6 (2025-06-30T09:48:37Z) for Minecraft 1.21.6
+[12:57:43] [ServerMain/INFO]: [PluginInitializerManager] Initializing plugins...
+[12:57:44] [ServerMain/INFO]: [PluginInitializerManager] Initialized 1 plugin
+[12:57:44] [ServerMain/INFO]: [PluginInitializerManager] Bukkit plugins (1):
  - VideoPlayerPlugin (1.0.0)
-[17:58:42] [ServerMain/INFO]: Environment: Environment[sessionHost=https://sessionserver.mojang.com, servicesHost=https://api.minecraftservices.com, name=PROD]
-[17:58:42] [ServerMain/INFO]: Found new data pack file/bukkit, loading it automatically
-[17:58:42] [ServerMain/INFO]: Found new data pack paper, loading it automatically
-[17:58:43] [ServerMain/INFO]: No existing world data, creating new world
-[17:58:43] [ServerMain/INFO]: Loaded 1407 recipes
-[17:58:43] [ServerMain/INFO]: Loaded 1520 advancements
-[17:58:43] [ServerMain/INFO]: [ca.spottedleaf.dataconverter.minecraft.datatypes.MCTypeRegistry] Initialising converters for DataConverter...
-[17:58:44] [ServerMain/INFO]: [ca.spottedleaf.dataconverter.minecraft.datatypes.MCTypeRegistry] Finished initialising converters for DataConverter in 366.7ms
-[17:58:44] [Server thread/INFO]: Starting minecraft server version 1.21.6
-[17:58:44] [Server thread/INFO]: Loading properties
-[17:58:44] [Server thread/INFO]: This server is running Paper version 1.21.6-48-main@4d854e6 (2025-06-30T09:48:37Z) (Implementing API version 1.21.6-R0.1-SNAPSHOT)
-[17:58:44] [Server thread/INFO]: [spark] This server bundles the spark profiler. For more information please visit https://docs.papermc.io/paper/profiling
-[17:58:44] [Server thread/INFO]: Server Ping Player Sample Count: 12
-[17:58:44] [Server thread/INFO]: Using 4 threads for Netty based IO
-[17:58:45] [Server thread/INFO]: [MoonriseCommon] Paper is using 4 worker threads, 1 I/O threads
-[17:58:45] [Server thread/INFO]: [ChunkTaskScheduler] Chunk system is using population gen parallelism: true
-[17:58:45] [Server thread/INFO]: Default game type: SURVIVAL
-[17:58:45] [Server thread/INFO]: Generating keypair
-[17:58:45] [Server thread/INFO]: Starting Minecraft server on *:25565
-[17:58:45] [Server thread/INFO]: Using default channel type
-[17:58:45] [Server thread/INFO]: Paper: Using Java compression from Velocity.
-[17:58:45] [Server thread/INFO]: Paper: Using Java cipher from Velocity.
-[17:58:45] [Server thread/INFO]: [VideoPlayerPlugin] Loading server plugin VideoPlayerPlugin v1.0.0
-[17:58:45] [Server thread/INFO]: Preparing level "world"
-[17:58:49] [Server thread/INFO]: Preparing start region for dimension minecraft:overworld
-[17:58:49] [Server thread/INFO]: Preparing spawn area: 0%
-[17:58:49] [Server thread/INFO]: Preparing spawn area: 2%
-[17:58:50] [Server thread/INFO]: Preparing spawn area: 18%
-[17:58:51] [Server thread/INFO]: Preparing spawn area: 51%
-[17:58:51] [Server thread/INFO]: Preparing spawn area: 51%
-[17:58:51] [Server thread/INFO]: Time elapsed: 2070 ms
-[17:58:51] [Server thread/INFO]: Preparing start region for dimension minecraft:the_nether
-[17:58:51] [Server thread/INFO]: Preparing spawn area: 2%
-[17:58:51] [Server thread/INFO]: Preparing spawn area: 73%
-[17:58:51] [Server thread/INFO]: Time elapsed: 516 ms
-[17:58:51] [Server thread/INFO]: Preparing start region for dimension minecraft:the_end
-[17:58:51] [Server thread/INFO]: Preparing spawn area: 2%
-[17:58:52] [Server thread/INFO]: Time elapsed: 152 ms
-[17:58:52] [Server thread/INFO]: [VideoPlayerPlugin] Enabling VideoPlayerPlugin v1.0.0
-[17:58:52] [Server thread/INFO]: [VideoPlayerPlugin] VideoPlayerPlugin initializing...
-[17:58:52] [Server thread/INFO]: [VideoPlayerPlugin] VideoPlayerPlugin initialized!
-[17:58:52] [Server thread/INFO]: [spark] Starting background profiler...
-[17:58:52] [Server thread/INFO]: [spark] The async-profiler engine is not supported for your os/arch (windows11/amd64), so the built-in Java engine will be used instead.
-[17:58:52] [Server thread/INFO]: Done preparing level "world" (6.657s)
-[17:58:52] [Server thread/INFO]: Running delayed init tasks
-[17:58:52] [Server thread/INFO]: Done (18.017s)! For help, type "help"
-[17:58:52] [Server thread/INFO]: *************************************************************************************
-[17:58:52] [Server thread/INFO]: This is the first time you're starting this server.
-[17:58:52] [Server thread/INFO]: It's recommended you read our 'Getting Started' documentation for guidance.
-[17:58:52] [Server thread/INFO]: View this and more helpful information here: https://docs.papermc.io/paper/next-steps
-[17:58:52] [Server thread/INFO]: *************************************************************************************
+[12:57:51] [ServerMain/INFO]: Environment: Environment[sessionHost=https://sessionserver.mojang.com, servicesHost=https://api.minecraftservices.com, name=PROD]
+[12:57:54] [ServerMain/INFO]: Loaded 1407 recipes
+[12:57:54] [ServerMain/INFO]: Loaded 1520 advancements
+[12:57:54] [ServerMain/INFO]: [ca.spottedleaf.dataconverter.minecraft.datatypes.MCTypeRegistry] Initialising converters for DataConverter...
+[12:57:55] [ServerMain/INFO]: [ca.spottedleaf.dataconverter.minecraft.datatypes.MCTypeRegistry] Finished initialising converters for DataConverter in 446.7ms
+[12:57:55] [Server thread/INFO]: Starting minecraft server version 1.21.6
+[12:57:55] [Server thread/INFO]: Loading properties
+[12:57:55] [Server thread/INFO]: This server is running Paper version 1.21.6-48-main@4d854e6 (2025-06-30T09:48:37Z) (Implementing API version 1.21.6-R0.1-SNAPSHOT)
+[12:57:55] [Server thread/INFO]: [spark] This server bundles the spark profiler. For more information please visit https://docs.papermc.io/paper/profiling
+[12:57:55] [Server thread/INFO]: Server Ping Player Sample Count: 12
+[12:57:55] [Server thread/INFO]: Using 4 threads for Netty based IO
+[12:57:56] [Server thread/INFO]: [MoonriseCommon] Paper is using 4 worker threads, 1 I/O threads
+[12:57:56] [Server thread/INFO]: [ChunkTaskScheduler] Chunk system is using population gen parallelism: true
+[12:57:56] [Server thread/INFO]: Default game type: SURVIVAL
+[12:57:56] [Server thread/INFO]: Generating keypair
+[12:57:56] [Server thread/INFO]: Starting Minecraft server on *:25565
+[12:57:56] [Server thread/INFO]: Using default channel type
+[12:57:56] [Server thread/INFO]: Paper: Using Java compression from Velocity.
+[12:57:56] [Server thread/INFO]: Paper: Using Java cipher from Velocity.
+[12:57:57] [Server thread/INFO]: [VideoPlayerPlugin] Loading server plugin VideoPlayerPlugin v1.0.0
+[12:57:57] [Server thread/INFO]: Server permissions file permissions.yml is empty, ignoring it
+[12:57:57] [Server thread/WARN]: **** SERVER IS RUNNING IN OFFLINE/INSECURE MODE!
+[12:57:57] [Server thread/WARN]: The server will make no attempt to authenticate usernames. Beware.
+[12:57:57] [Server thread/WARN]: While this makes the game possible to play without internet access, it also opens up the ability for hackers to connect with any username they choose.
+[12:57:57] [Server thread/WARN]: To change this, set "online-mode" to "true" in the server.properties file.
+[12:57:57] [Server thread/INFO]: Preparing level "world"
+[12:57:57] [Server thread/INFO]: Preparing start region for dimension minecraft:overworld
+[12:57:58] [Server thread/INFO]: Preparing spawn area: 0%
+[12:57:58] [Server thread/INFO]: Preparing spawn area: 0%
+[12:57:58] [Server thread/INFO]: Preparing spawn area: 18%
+[12:57:58] [Server thread/INFO]: Time elapsed: 1208 ms
+[12:57:58] [Server thread/INFO]: Preparing start region for dimension minecraft:the_nether
+[12:57:58] [Server thread/INFO]: Preparing spawn area: 0%
+[12:57:59] [Server thread/INFO]: Time elapsed: 265 ms
+[12:57:59] [Server thread/INFO]: Preparing start region for dimension minecraft:the_end
+[12:57:59] [Server thread/INFO]: Preparing spawn area: 0%
+[12:57:59] [Server thread/INFO]: Time elapsed: 139 ms
+[12:57:59] [Server thread/INFO]: [VideoPlayerPlugin] Enabling VideoPlayerPlugin v1.0.0
+[12:57:59] [Server thread/INFO]: [VideoPlayerPlugin] VideoPlayerPlugin initializing...
+[12:57:59] [Server thread/INFO]: [VideoPlayerPlugin] VideoPlayerPlugin initialized!
+[12:57:59] [Server thread/INFO]: [spark] Starting background profiler...
+[12:57:59] [Server thread/INFO]: [spark] The async-profiler engine is not supported for your os/arch (windows11/amd64), so the built-in Java engine will be used instead.
+[12:57:59] [Server thread/INFO]: Done preparing level "world" (2.528s)
+[12:57:59] [Server thread/INFO]: Starting remote control listener
+[12:57:59] [Server thread/INFO]: Thread RCON Listener started
+[12:57:59] [Server thread/INFO]: RCON running on 0.0.0.0:25575
+[12:57:59] [Server thread/INFO]: Running delayed init tasks
+[12:57:59] [Server thread/INFO]: Done (18.625s)! For help, type "help"
+[13:01:31] [User Authenticator #0/INFO]: UUID of player Player275 is 15e32ee2-096b-3f4e-a175-32675a0e4e9c
+[13:01:32] [Server thread/INFO]: [VideoPlayerPlugin] [DevAutoOp] Opped Player275
+[13:01:32] [Server thread/INFO]: Player275 joined the game
+[13:01:33] [Server thread/INFO]: Player275[/127.0.0.1:12462] logged in with entity id 4 at ([world]-124.5, 63.0, -212.5)
+[13:01:43] [Server thread/INFO]: [VideoPlayerPlugin] Video registry reloaded: 2 entries
+[13:01:45] [Server thread/INFO]: Player275 issued server command: /cinematic play demo
+[13:01:45] [Server thread/INFO]: [VideoPlayerPlugin] Playing 'demo' — sent to 1/1 player(s)
+[13:01:51] [Server thread/INFO]: Player275 issued server command: /cinematic volume 1
+[13:13:20] [Server thread/INFO]: Player275 lost connection: Disconnected
+[13:13:20] [Server thread/INFO]: Player275 left the game
+[23:07:34] [User Authenticator #1/INFO]: UUID of player Player667 is 336cdb69-b175-3ad2-a556-740278ca80ab
+[23:07:35] [Server thread/INFO]: [VideoPlayerPlugin] [DevAutoOp] Opped Player667
+[23:07:35] [Server thread/INFO]: Player667 joined the game
+[23:07:35] [Server thread/INFO]: Player667[/127.0.0.1:5230] logged in with entity id 253 at ([world]-116.5, 63.0, -204.5)
+[23:07:39] [Server thread/INFO]: Player667 issued server command: /cinematic play demo
+[23:07:39] [Server thread/INFO]: [VideoPlayerPlugin] Playing 'demo' — sent to 1/1 player(s)
+[23:07:46] [Server thread/INFO]: Player667 issued server command: /cinematic volume 0
+[23:09:01] [Server thread/INFO]: Player667 issued server command: /cinematic play demo
+[23:09:01] [Server thread/INFO]: [VideoPlayerPlugin] Playing 'demo' — sent to 1/1 player(s)
+[23:09:27] [Server thread/INFO]: Player667 issued server command: /cinematic volume 2
+[23:09:30] [Server thread/INFO]: Player667 issued server command: /cinematic volume 0

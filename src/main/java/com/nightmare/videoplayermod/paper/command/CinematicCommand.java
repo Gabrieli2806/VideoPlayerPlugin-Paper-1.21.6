@@ -4,6 +4,7 @@ import com.nightmare.videoplayermod.paper.VideoPlayerPlugin;
 import com.nightmare.videoplayermod.paper.config.VideoRegistry;
 import com.nightmare.videoplayermod.paper.network.DirectPayloadSender;
 import com.nightmare.videoplayermod.paper.network.PayloadWriter;
+import com.nightmare.videoplayermod.paper.network.VideoFileTransfer;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
@@ -17,12 +18,13 @@ import org.bukkit.entity.Player;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 public class CinematicCommand implements CommandExecutor, TabCompleter {
 
@@ -40,7 +42,7 @@ public class CinematicCommand implements CommandExecutor, TabCompleter {
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (args.length == 0) {
-            sender.sendMessage(Component.text("Usage: /cinematic <play|stop|list|volume|reload>", NamedTextColor.RED));
+            sender.sendMessage(Component.text("Usage: /videoplay <play|stop|list|volume|reload>", NamedTextColor.RED));
             return true;
         }
 
@@ -52,7 +54,7 @@ public class CinematicCommand implements CommandExecutor, TabCompleter {
             case "volume" -> handleVolume(sender, args);
             case "reload" -> handleReload(sender);
             default -> {
-                sender.sendMessage(Component.text("Unknown subcommand. Use: /cinematic <play|stop|list|volume|reload>", NamedTextColor.RED));
+                sender.sendMessage(Component.text("Unknown subcommand. Use: /videoplay <play|stop|list|volume|reload>", NamedTextColor.RED));
                 yield true;
             }
         };
@@ -65,7 +67,7 @@ public class CinematicCommand implements CommandExecutor, TabCompleter {
         }
 
         if (args.length < 2) {
-            sender.sendMessage(Component.text("Usage: /cinematic play <id> [targets]", NamedTextColor.RED));
+            sender.sendMessage(Component.text("Usage: /videoplay play <id> [targets]", NamedTextColor.RED));
             return true;
         }
 
@@ -83,6 +85,23 @@ public class CinematicCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
+        // Convert local file paths to HTTP URLs so remote clients can download them
+        // If the source is a local file, use chunked transfer via MC connection instead
+        boolean isUrl = source.startsWith("http://") || source.startsWith("https://");
+        Path localFile = null;
+        if (!isUrl) {
+            // Try to resolve the local file
+            localFile = Path.of(source);
+            if (!Files.exists(localFile)) {
+                // Try relative to videos dir
+                localFile = plugin.getVideoRegistry().getConfigRoot().resolve("videos").resolve(localFile.getFileName());
+            }
+            if (!Files.exists(localFile)) {
+                sender.sendMessage(Component.text("Video file not found on server: " + source, NamedTextColor.RED));
+                return true;
+            }
+        }
+
         String targetInput = args.length >= 3 ? args[2] : "@a";
         Collection<Player> targets = resolveTargets(sender, targetInput);
 
@@ -91,14 +110,22 @@ public class CinematicCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        byte[] payload = new PayloadWriter()
-                .writeUtf(id)
-                .writeUtf(source)
-                .toByteArray();
-
         int sent = 0;
-        for (Player player : targets) {
-            if (DirectPayloadSender.send(plugin, player, VideoPlayerPlugin.CHANNEL_PLAY_VIDEO, payload, plugin.getLogger())) {
+        if (isUrl) {
+            // URL source: send play command with the URL, client will download directly
+            byte[] payload = new PayloadWriter()
+                    .writeUtf(id)
+                    .writeUtf(source)
+                    .toByteArray();
+            for (Player player : targets) {
+                if (DirectPayloadSender.send(plugin, player, VideoPlayerPlugin.CHANNEL_PLAY_VIDEO, payload, plugin.getLogger())) {
+                    sent++;
+                }
+            }
+        } else {
+            // Local file: use chunked transfer through the MC connection (no extra ports needed)
+            for (Player player : targets) {
+                VideoFileTransfer.transferToPlayer(plugin, player, id, localFile, plugin.getLogger());
                 sent++;
             }
         }
@@ -170,7 +197,7 @@ public class CinematicCommand implements CommandExecutor, TabCompleter {
         }
 
         if (args.length < 2) {
-            sender.sendMessage(Component.text("Usage: /cinematic volume <0-100> [targets]", NamedTextColor.RED));
+            sender.sendMessage(Component.text("Usage: /videoplay volume <0-100> [targets]", NamedTextColor.RED));
             return true;
         }
 
@@ -242,13 +269,22 @@ public class CinematicCommand implements CommandExecutor, TabCompleter {
     private Collection<Player> resolveNearestPlayer(CommandSender sender) {
         if (sender instanceof Player senderPlayer) {
             Location origin = senderPlayer.getLocation();
-            return Bukkit.getOnlinePlayers().stream()
-                    .min(Comparator.comparingDouble(player -> player.getLocation().distanceSquared(origin)))
-                    .map(List::of)
-                    .orElseGet(Collections::emptyList);
+            Player nearest = null;
+            double nearestDist = Double.MAX_VALUE;
+            for (Player p : Bukkit.getOnlinePlayers()) {
+                double d = p.getLocation().distanceSquared(origin);
+                if (d < nearestDist) {
+                    nearestDist = d;
+                    nearest = p;
+                }
+            }
+            return nearest != null ? List.of(nearest) : Collections.emptyList();
         }
 
-        return Bukkit.getOnlinePlayers().stream().findFirst().<Collection<Player>>map(List::of).orElseGet(Collections::emptyList);
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            return List.of(p);
+        }
+        return Collections.emptyList();
     }
 
     @Override

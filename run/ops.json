@@ -1,1 +1,104 @@
-[]
+[
+  {
+    "uuid": "15e32ee2-096b-3f4e-a175-32675a0e4e9c",
+    "name": "Player275",
+    "level": 4,
+    "bypassesPlayerLimit": false
+  },
+  {
+    "uuid": "3489ef1a-d782-43cb-b678-23c45eb87136",
+    "name": "Nightmare_33n",
+    "level": 4,
+    "bypassesPlayerLimit": false
+  },
+  {
+    "uuid": "9ba1d9fb-277b-3ec4-9552-50e8dd85d3d4",
+    "name": "Player684",
+    "level": 4,
+    "bypassesPlayerLimit": false
+  },
+  {
+    "uuid": "1c207d49-b6d4-301f-bf62-f591002e4f1a",
+    "name": "Player145",
+    "level": 4,
+    "bypassesPlayerLimit": false
+  },
+  {
+    "uuid": "56194db1-2459-3533-bada-8561030dd064",
+    "name": "Player510",
+    "level": 4,
+    "bypassesPlayerLimit": false
+  },
+  {
+    "uuid": "078f5e46-1768-3b85-8c83-1cee0b3b10ab",
+    "name": "Player776",
+    "level": 4,
+    "bypassesPlayerLimit": false
+  },
+  {
+    "uuid": "a7d84b43-620c-3be0-bbc6-d96e040e37ab",
+    "name": "Player590",
+    "level": 4,
+    "bypassesPlayerLimit": false
+  },
+  {
+    "uuid": "6421d26c-b813-3e76-bed7-39f6f8e7da7e",
+    "name": "Player167",
+    "level": 4,
+    "bypassesPlayerLimit": false
+  },
+  {
+    "uuid": "e7efa64c-d66a-3088-a9f4-5a1090261573",
+    "name": "Player212",
+    "level": 4,
+    "bypassesPlayerLimit": false
+  },
+  {
+    "uuid": "336cdb69-b175-3ad2-a556-740278ca80ab",
+    "name": "Player667",
+    "level": 4,
+    "bypassesPlayerLimit": false
+  },
+  {
+    "uuid": "638f7175-5dde-3b0d-a13d-f593ecd79b38",
+    "name": "Player527",
+    "level": 4,
+    "bypassesPlayerLimit": false
+  },
+  {
+    "uuid": "92939c63-a7e1-358c-986e-33e314619bde",
+    "name": "Player606",
+    "level": 4,
+    "bypassesPlayerLimit": false
+  },
+  {
+    "uuid": "4208f94a-cce0-3579-97ad-e56b96b8d526",
+    "name": "Player614",
+    "level": 4,
+    "bypassesPlayerLimit": false
+  },
+  {
+    "uuid": "9033e00b-50d9-3cb5-b190-7fa9d916bd8f",
+    "name": "Player727",
+    "level": 4,
+    "bypassesPlayerLimit": false
+  },
+  {
+    "uuid": "905847c0-6737-32d8-85e6-3f64ecd32033",
+    "name": "Player515",
+    "level": 4,
+    "bypassesPlayerLimit": false
+  },
+  {
+    "uuid": "ead290bb-bad9-36fc-b265-db734c4eb7d4",
+    "name": "Player286",
+    "level": 4,
+    "bypassesPlayerLimit": false
+  },
+  {
+    "uuid": "fb4c6c18-26a1-3d95-a13f-9a47871171a2",
+    "name": "Player702",
+    "level": 4,
+    "bypassesPlayerLimit": false
+  }
+]
